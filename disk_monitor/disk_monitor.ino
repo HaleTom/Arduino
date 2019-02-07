@@ -17,7 +17,7 @@ const int interval = 1000; // milliseconds
 
 // Volatile variables may change without any action being taken by the surrounding code
 // https://barrgroup.com/Embedded-Systems/How-To/C-Volatile-Keyword
-volatile long fan_edges = 0;
+volatile uint32_t fan_change = 0;
 
 // Variables will change:
 int buttonPushCounter = 0;   // counter for the number of button presses
@@ -29,8 +29,19 @@ void setup() {
   pinMode(fanPin, INPUT_PULLUP);
   // initialize the LED as an output:
   pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, HIGH);
+
+  // Interrupt handler for fanPin
+  attachInterrupt(digitalPinToInterrupt(fanPin), fanISR, CHANGE);
+
   // initialize serial communication:
   Serial.begin(115200);
+}
+
+void fanISR() {
+  ++fan_change;
+  Serial.println(fan_change);
+  led_flash(20);
 }
 
 // Set the LED on for duration specified in milliseconds
@@ -42,36 +53,39 @@ void led_flash(unsigned long duration) {
 
 
 void loop() {
-  // read the pushbutton input pin:
-  buttonState = digitalRead(fanPin);
-
-  // compare the buttonState to its previous state
-  if (buttonState != lastButtonState) {
-    // if the state has changed, increment the counter
-    if (buttonState == LOW) {
-      // if the current state is HIGH then the button went from off to on:
-      buttonPushCounter++;
-      Serial.println("on");
-      Serial.print("number of button pushes: ");
-      Serial.println(buttonPushCounter);
-      if (buttonPushCounter % 4 == 0) {
-        Serial.println("Blink LED");
-        led_flash(5);
-      } 
-    } else {
-      // if the current state is LOW then the button went from on to off:
-      Serial.println("off");
-    }
-    
-    // Delay a little bit to avoid bouncing
-    delay(50);
-
-  
-  }
-  // save the current state as the last state, for next time through the loop
-  lastButtonState = buttonState;
-
-
-
-
+  delay(1000);
 }
+
+
+//void loop() {
+//  // read the pushbutton input pin:
+//  buttonState = digitalRead(fanPin);
+//
+//  // compare the buttonState to its previous state
+//  if (buttonState != lastButtonState) {
+//    // if the state has changed, increment the counter
+//    if (buttonState == LOW) {
+//      // if the current state is HIGH then the button went from off to on:
+//      buttonPushCounter++;
+//      Serial.println("on");
+//      Serial.print("number of button pushes: ");
+//      Serial.println(buttonPushCounter);
+//      if (buttonPushCounter % 4 == 0) {
+//        Serial.println("Blink LED");
+//        led_flash(5);
+//      } 
+//    } else {
+//      // if the current state is LOW then the button went from on to off:
+//      Serial.println("off");
+//    }
+//    
+//    // Delay a little bit to avoid bouncing
+//    delay(50);
+//
+//  
+//  }
+//  // save the current state as the last state, for next time through the loop
+//  lastButtonState = buttonState;
+//
+//
+//}
