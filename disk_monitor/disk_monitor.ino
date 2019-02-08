@@ -1,28 +1,31 @@
-// Ravi: Changed the Example to work with pull-up resistor on input pin
-
 /*
-  
-  The circuit:
-  - pushbutton attached to pin 2 from +5V
-  - 10 kilohm resistor attached to pin 2 from ground
-  - LED attached from pin 13 to ground (or use the built-in LED on most
-    Arduino boards)
 
+  The circuit:
+  - Fan signal wire attached to Pin 2 via 10K pull-up resistor
+  - LED attached from pin 13 to ground (built-in)
+  - 400 nF capacitor to provide a 2.8ms delay (http://ladyada.net/library/rccalc.html)
+
+  When tested, the fan data wire grounded for approx 15ms then opened for another ~15ms.
+  Each cycle represents half a revolution and 60ms per rev is 1000RPM.
+  Oscilloscope picture: https://photos.app.goo.gl/hVEmkFpTDJfzZD4g9
+
+   Assumptions:
+    * At least one revolution per print interval
+    * A revolution will take less than 71 minutes (UINT32_MAX is micros() overflow window)
+    * There will be less than UINT32_MAX fan interrupts per period (and RPM won't overflow DBL_MAX)
 */
 
+// https://en.wikipedia.org/wiki/C_data_types
+
 // Constants
-const int fanPin = 2;
-const int ledPin = LED_BUILTIN;
-const int interval = 1000; // milliseconds
+const byte fanPin = 2;
+const byte ledPin = LED_BUILTIN;
+const uint32_t interval = 1 * 1e6;  // Print interval, in microseconds
+const byte ticksPerRev = 1;
 
-// Volatile variables may change without any action being taken by the surrounding code
-// https://barrgroup.com/Embedded-Systems/How-To/C-Volatile-Keyword
-volatile uint32_t fan_change = 0;
-
-// Variables will change:
-int buttonPushCounter = 0;   // counter for the number of button presses
-int buttonState = 0;         // current state of the button
-int lastButtonState = 0;     // previous state of the button
+// Global variables
+uint32_t start;           // Interval start time, time of last output
+uint32_t lastStart;       // Start of previous interval
 
 void setup() {
   // initialize the button pin as a input:
@@ -31,61 +34,102 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, HIGH);
 
-  // Interrupt handler for fanPin
-  attachInterrupt(digitalPinToInterrupt(fanPin), fanISR, CHANGE);
-
-  // initialize serial communication:
+  // Initialize serial communication
   Serial.begin(115200);
+  while (!Serial); // Wait until port is open (required for ATmega32U4)
+
+  // Interrupt handler for fanPin
+  // Clear flag if interrupt has already occured causing handler to run immediately
+  // http://www.gammon.com.au/interrupts
+  EIFR = bit(digitalPinToInterrupt(fanPin));
+  attachInterrupt(digitalPinToInterrupt(fanPin), fanISR, FALLING);
+
+  start = micros(); // Record the start of the first interval
+  lastStart = start;
 }
 
+
+// Volatile variables may change without any action being taken by the surrounding code (eg ISR)
+// https://barrgroup.com/Embedded-Systems/How-To/C-Volatile-Keyword
+volatile uint32_t ISRTicks = 0;   // Number of transitions to fanPin LOW per interval
+volatile uint32_t firstTick = 0;  // Microseconds from start to first of fanTicks this period
+volatile uint32_t lastTick = 0;   // Time of last tick (us). First interval RPM will be slightly high as history is unavailable
+// XXX only do 
+
+
+// Processor loop
+void loop() {
+  double RPM;                    // Revs per minute of last time period
+  double ticks;                  // fanTicks this interval
+  uint32_t prePartial;           // Time from interval start to first tick
+  uint32_t postPartial;          // Time from last tick to interval end
+  uint32_t now = micros();       // Loop start time in microseconds
+
+  // Return if it's not yet time to start a new interval
+  if (now - start < interval) {
+    // Serial.println("returning"); delay(450);
+    return;
+  }
+
+  /* delay(200); */
+
+  // New time interval starts now
+  start = micros();
+
+  // Copy / update all ISR variables
+  noInterrupts();  // Any interrupts will occur on reactivation
+  ticks = ISRTicks;
+  prePartial = firstTick;
+  postPartial = start - lastTick;
+  ISRTicks = 0;
+  interrupts();
+
+  Serial.print("Ticks: ");
+  Serial.println(ticks);
+
+  Serial.print("Pre interval: ");
+  Serial.println(prePartial / 1000.0);
+
+  Serial.print("Post interval: ");
+  Serial.println(postPartial / 1000.0);
+
+  if (ticks > 1) {
+    // We can extrapolate given an interval
+    double tickPeriod = (start - lastStart - prePartial - postPartial) / ticks;
+    ticks += (prePartial + postPartial) / tickPeriod;
+  }
+
+  ticks /= ticksPerRev;
+
+  Serial.print("Post interval: ");
+  Serial.println(postPartial / 1000.0);
+}
+
+
+// https://www.arduino.cc/reference/en/language/functions/external-interrupts/attachinterrupt/
+// Inside the attached function, delay() won’t work and the value returned by millis() will not increment.
+// Serial data received while in the function may be lost.
+// You should declare as volatile any variables that you modify within the attached function
 void fanISR() {
-  ++fan_change;
-  Serial.println(fan_change);
-  led_flash(20);
+  uint32_t now = micros();  // micros() will behave erratically after 1-2ms inside ISR
+
+ // return; // XXX
+
+  if (!ISRTicks) {
+    firstTick = now - start;
+  }
+  ++ISRTicks;
+  lastTick = now;
+  /* delayMicroseconds(3000);  // Prevent bounce */
+  /* ledFlash(5); */
+  /* Serial.println("ISR done"); */
 }
 
-// Set the LED on for duration specified in milliseconds
-void led_flash(unsigned long duration) {
+
+// Set the LED on for duration specified in milliseconds, then off
+void ledFlash(uint16_t duration) {
   digitalWrite(ledPin, HIGH);
-  delay(duration);
+  // Use delayMicroseconds() as it doesn't disable interrupts nor use any counter
+  delayMicroseconds((uint32_t) duration * 1000);
   digitalWrite(ledPin, LOW);
 }
-
-
-void loop() {
-  delay(1000);
-}
-
-
-//void loop() {
-//  // read the pushbutton input pin:
-//  buttonState = digitalRead(fanPin);
-//
-//  // compare the buttonState to its previous state
-//  if (buttonState != lastButtonState) {
-//    // if the state has changed, increment the counter
-//    if (buttonState == LOW) {
-//      // if the current state is HIGH then the button went from off to on:
-//      buttonPushCounter++;
-//      Serial.println("on");
-//      Serial.print("number of button pushes: ");
-//      Serial.println(buttonPushCounter);
-//      if (buttonPushCounter % 4 == 0) {
-//        Serial.println("Blink LED");
-//        led_flash(5);
-//      } 
-//    } else {
-//      // if the current state is LOW then the button went from on to off:
-//      Serial.println("off");
-//    }
-//    
-//    // Delay a little bit to avoid bouncing
-//    delay(50);
-//
-//  
-//  }
-//  // save the current state as the last state, for next time through the loop
-//  lastButtonState = buttonState;
-//
-//
-//}
