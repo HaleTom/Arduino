@@ -20,12 +20,19 @@
 // Constants
 const byte fanPin = 2;
 const byte ledPin = LED_BUILTIN;
-const uint32_t interval = 1 * 1e6;  // Print interval, in microseconds
-const byte ticksPerRev = 1;
+const uint32_t interval = 5 * 1e6;  // Print interval, in microseconds
+const byte ticksPerRev = 2;
 
 // Global variables
-uint32_t start;           // Interval start time, time of last output
-uint32_t lastStart;       // Start of previous interval
+uint32_t end;           // Interval end time, beginning of output
+uint32_t prevStart;     // Start of previous interval
+
+// Volatile variables may change without any action being taken by the surrounding code (eg ISR)
+// https://barrgroup.com/Embedded-Systems/How-To/C-Volatile-Keyword
+volatile uint32_t ISRTicks = 0;        // Number of transitions to fanPin LOW per interval  XXXXXXXXXXXXX
+volatile uint32_t firstTickDelay;      // Microseconds from start to first of fanTicks this period
+volatile uint32_t lastTick;            // Time of last tick (us). First interval RPM will be slightly high as history is unavailable
+
 
 void setup() {
   // initialize the button pin as a input:
@@ -42,67 +49,66 @@ void setup() {
   // Clear flag if interrupt has already occured causing handler to run immediately
   // http://www.gammon.com.au/interrupts
   EIFR = bit(digitalPinToInterrupt(fanPin));
-  attachInterrupt(digitalPinToInterrupt(fanPin), fanISR, FALLING);
+  // https://www.arduino.cc/reference/en/language/functions/external-interrupts/attachinterrupt/
+  attachInterrupt(digitalPinToInterrupt(fanPin), fanISR, CHANGE);
 
-  start = micros(); // Record the start of the first interval
-  lastStart = start;
+  lastTick = prevStart = micros();  // Zero "previous" interval
 }
 
 
-// Volatile variables may change without any action being taken by the surrounding code (eg ISR)
-// https://barrgroup.com/Embedded-Systems/How-To/C-Volatile-Keyword
-volatile uint32_t ISRTicks = 0;   // Number of transitions to fanPin LOW per interval
-volatile uint32_t firstTick = 0;  // Microseconds from start to first of fanTicks this period
-volatile uint32_t lastTick = 0;   // Time of last tick (us). First interval RPM will be slightly high as history is unavailable
-// XXX only do 
-
-
-// Processor loop
 void loop() {
   double RPM;                    // Revs per minute of last time period
   double ticks;                  // fanTicks this interval
   uint32_t prePartial;           // Time from interval start to first tick
   uint32_t postPartial;          // Time from last tick to interval end
-  uint32_t now = micros();       // Loop start time in microseconds
+  uint32_t now;                  // Current time in microseconds
 
-  // Return if it's not yet time to start a new interval
-  if (now - start < interval) {
-    // Serial.println("returning"); delay(450);
-    return;
+  Serial.print("Start: ");
+  Serial.print(prevStart);
+
+  // Loop collecting interrupts if it's not yet time to start a new interval
+  // Assign and compare for more precise interval end timing later
+  while ( (now = micros()) - prevStart < interval) {
+    // Handle interrupts
   }
 
-  /* delay(200); */
+  // New time interval and interrupt counting starts now, calculations are based on the completed interval
+  noInterrupts();  // Elided interrupts will appear on reactivation
+  end = now;
 
-  // New time interval starts now
-  start = micros();
-
-  // Copy / update all ISR variables
-  noInterrupts();  // Any interrupts will occur on reactivation
+  // Copy / update all interrupt handler variables
   ticks = ISRTicks;
-  prePartial = firstTick;
-  postPartial = start - lastTick;
+  if (ticks) {
+    prePartial  = firstTickDelay;
+    postPartial = end - lastTick;
+  } else {
+    prePartial  = 0;
+    postPartial = 0;
+  }
   ISRTicks = 0;
   interrupts();
 
-  Serial.print("Ticks: ");
-  Serial.println(ticks);
+  Serial.print("  Ticks: ");
+  Serial.print(ticks);
 
-  Serial.print("Pre interval: ");
-  Serial.println(prePartial / 1000.0);
+  Serial.print("  Pre interval: ");
+  Serial.print(prePartial / 1000.0);
 
-  Serial.print("Post interval: ");
-  Serial.println(postPartial / 1000.0);
+  Serial.print("  Post interval: ");
+  Serial.print(postPartial / 1000.0);
 
   if (ticks > 1) {
-    // We can extrapolate given an interval
-    double tickPeriod = (start - lastStart - prePartial - postPartial) / ticks;
-    ticks += (prePartial + postPartial) / tickPeriod;
+    // We have an interval to extrapolate from
+    double avgTickPeriod = (end - prevStart - prePartial - postPartial) / ticks;
+    ticks += (prePartial + postPartial) / avgTickPeriod;
   }
 
-  ticks /= ticksPerRev;
+  ticks /= ticksPerRev;  // Allow for multiple ticks per revolution
 
-  Serial.print("Post interval: ");
-  Serial.println(postPartial / 1000.0);
+  Serial.print("  RPM: ");
+  RPM = ticks * 60 * 1e6 / interval;
+  Serial.println(RPM);
+  prevStart = end;  // Prepare to begin a new interval
 }
 
 
@@ -113,10 +119,10 @@ void loop() {
 void fanISR() {
   uint32_t now = micros();  // micros() will behave erratically after 1-2ms inside ISR
 
- // return; // XXX
+  if (now - lastTick < 200 * 1000) return;   // XXX XXX Testing only
 
   if (!ISRTicks) {
-    firstTick = now - start;
+    firstTickDelay = now - end;
   }
   ++ISRTicks;
   lastTick = now;
