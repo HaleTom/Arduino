@@ -25,15 +25,18 @@
   Oscilloscope picture: https://photos.app.goo.gl/hVEmkFpTDJfzZD4g9
 
    Assumptions:
-    * At least one revolution per print interval
     * A revolution will take less than 71 minutes (UINT32_MAX is micros() overflow window)
     * There will be less than UINT32_MAX fan interrupts per period (and RPM won't overflow DBL_MAX)
 */
 
+
+#include "DHT.h"  // https://github.com/markruys/arduino-DHT
+
 // https://en.wikipedia.org/wiki/C_data_types
 
 // Constants
-const byte fanPin = 1;
+const byte dhtPin = 0;
+const byte fanPin = 4;
 const byte ledPin = LED_BUILTIN;
 const byte intervalsPerRev = 4;
 // Ticks for extrapolating to partial revolutions. Minimum is 2 for one interval.
@@ -48,6 +51,7 @@ const uint32_t bouncePeriod = 2000;
 const uint32_t interval = 1 * 1e6;   // Print interval, converted to microseconds
 
 // Global variables
+DHT dht;                     // Object for AM2302 (packaged DHT22)
 uint32_t start;              // Start of interval of interest
 uint32_t end;                // Interval end time, beginning of output
 
@@ -59,11 +63,15 @@ volatile uint32_t lastTick;            // Time of last tick (us). First interval
 
 
 void setup() {
-  // initialize the button pin as a input:
+  // Initialize the fan pin as a input with internal pull-up
   pinMode(fanPin, INPUT_PULLUP);
-  // initialize the LED as an output:
+
+  // Initialise DHT22 pin. External pull-up required as library doesn't use _PULLUP
+  dht.setup(dhtPin, DHT::DHT22);
+  
+  // Initialize the LED as an output:
   pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);
+  digitalWrite(ledPin, HIGH); // Show we are alive
 
   // Initialize serial communication
   Serial.begin(2e6);  // 2M baud over USB
@@ -81,10 +89,11 @@ void setup() {
   lastTick = start = end = micros();  // Zero counters
 }
 
-// Wait for completion of, then print the stats for one time interval
-// Blink LED every TicksPerBlink while waiting for time interval completion
-// Start new interval then print out stats for the completed one
-// End after the stats for one interval have been printed out
+
+// Blink LED every TicksPerBlink while waiting for the end of the _already_started_ interval
+// Copy the fan ISR statistics at interval completion;  start a new interval
+// Calculate RPM based on full and partial tick periods
+// Read temperature and humidity; print output
 void loop() {
   static uint32_t ledTicks = 0;    // Doesn't reset to 0 on new time interval
   static uint32_t ledOffTime = 0;  // Time at which LED should be off
@@ -119,23 +128,21 @@ void loop() {
     if (ledTicks % ticksPerBlink == 0) {
       digitalWrite(ledPin, HIGH);
       ledOffTime = now + ledBlinkDuration;
-      ledTicks = 0; // Prevent weirdness at overflow
+      ledTicks = 0; // Avoid overflow
     }
   }
 
-  // New time interval starts now, calculations are based on the completed interval
-  // Get a copy of stats for completed interval period; Zero ISR tick counter to begin new interval.
+  // Close off the completed interval and copy its statistics
   noInterrupts();
   end = now;
-
   ticks = ISRTicks;
   preTick  = firstTickDelay;
   postTick = end - lastTick;
-  ISRTicks = 0;
+  ISRTicks = 0;  // Zero ISR tick counter to start a new interval
   interrupts();
 
-  // ISR will now continue doing new accounting in the background
-
+  // ISR will continue with new interval accounting in the background
+  
   if (!ticks) {  // No ticks, so no pre or post period
     preTick  = 0;
     postTick = 0;
@@ -159,8 +166,22 @@ void loop() {
   cycles /= intervalsPerRev;  // Allow for multiple ticks per revolution
   RPM = cycles * 60 * 1e6 / interval;  // 1e6 is a double literal, so no type cast needed
 
+  // Reading DHT22 must be done with interrupts enabled as it uses millis() internally??
+  // https://arduino.stackexchange.com/questions/61567/what-functions-are-disabled-with-nointerrupts
+  float humidity = dht.getHumidity();
+  float temperature = dht.getTemperature();
+  char *dhtStatus = dht.getStatusString();
+
+  // Output
   Serial.print("RPM: ");
   Serial.print(RPM);
+
+  Serial.print("  Temp: ");
+  Serial.print(temperature, 1);
+  Serial.print("  Humid: ");
+  Serial.print(humidity, 1);
+  Serial.print("  DHT22: ");
+  Serial.print(dhtStatus);
 
   Serial.print("  Interval: ");
   Serial.print(end - start);
