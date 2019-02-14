@@ -2,7 +2,10 @@
 
   The circuit:
   - https://photos.app.goo.gl/rDH59h3GBUiFratk6  however, change:
-  - Fan signal wire attached to Pin 1 via 300K pull-up resistor XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  - Fan signal wire attached to Pin 2 (built in pull-up)
+  - AM2302 (DHT22) (http://akizukidenshi.com/download/ds/aosong/AM2302.pdf)
+    attached to pin 0 with 10K pull up resistor
+    Next time use more accurate Bosch BME280 or BME680
   - LED attached from pin 13 to ground (built-in)
 
   Digital IO threshold values:  LOW < 0.9V,  HIGH > 1.9V
@@ -12,21 +15,20 @@
   Debounce: (Implemented in software due to component and time constraints)
   - Software debounce could be more accurate given cap discharge curve
   - Time to discharge calculator: http://ladyada.net/library/rccalc.html
-  - Circuit: http://www.ganssle.com/debouncing-pt2.htm Figure 2:
-    18 nF capacitor, R1=300K + R2=10K, gives 1.1ms to drop to 0.9V on switch close
-  - Unsure of R2 time on switch open: 10K to 1.9V = 0.086?
+  - Circuit references:
+    http://www.labbookpages.co.uk/electronics/debounce.html (best circuit)
+    http://www.ganssle.com/debouncing-pt2.htm 
   - Better to use additonal diode to have 0.7V drop over R2 and more equal rise / fall times
   - Also (more generally about switches): http://www.gammon.com.au/switches
 
-  - Capacitor discharges to 2.5v through 10k resistor in 0.12ms
+  Fan:
+    When tested, the fan data wire grounded for approx 15ms then opened for another ~15ms.
+    Each cycle represents half a revolution and 60ms per rev is 1000RPM.
+    Oscilloscope picture: https://photos.app.goo.gl/hVEmkFpTDJfzZD4g9
 
-  When tested, the fan data wire grounded for approx 15ms then opened for another ~15ms.
-  Each cycle represents half a revolution and 60ms per rev is 1000RPM.
-  Oscilloscope picture: https://photos.app.goo.gl/hVEmkFpTDJfzZD4g9
-
-   Assumptions:
-    * A revolution will take less than 71 minutes (UINT32_MAX is micros() overflow window)
-    * There will be less than UINT32_MAX fan interrupts per period (and RPM won't overflow DBL_MAX)
+  Assumptions:
+   * A revolution will take less than 71 minutes (UINT32_MAX is micros() overflow window)
+   * There will be less than UINT32_MAX fan interrupts per period (and RPM won't overflow DBL_MAX)
 */
 
 
@@ -35,8 +37,8 @@
 // https://en.wikipedia.org/wiki/C_data_types
 
 // Constants
-const byte dhtPin = 0;
-const byte fanPin = 4;
+const byte dhtPin = 2;
+const byte fanPin = 0;
 const byte ledPin = LED_BUILTIN;
 const byte intervalsPerRev = 4;
 // Ticks for extrapolating to partial revolutions. Minimum is 2 for one interval.
@@ -68,7 +70,7 @@ void setup() {
 
   // Initialise DHT22 pin. External pull-up required as library doesn't use _PULLUP
   dht.setup(dhtPin, DHT::DHT22);
-  
+
   // Initialize the LED as an output:
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, HIGH); // Show we are alive
@@ -98,7 +100,7 @@ void loop() {
   static uint32_t ledTicks = 0;    // Doesn't reset to 0 on new time interval
   static uint32_t ledOffTime = 0;  // Time at which LED should be off
 
-  uint32_t ticks = 0;              // fanTicks this interval 
+  uint32_t ticks = 0;              // fanTicks this interval
   uint32_t preTick;                // Time from interval start to first tick
   uint32_t postTick;               // Time from last tick to interval end
   uint32_t now;                    // Current time in microseconds
@@ -106,6 +108,7 @@ void loop() {
   double avgTickPeriod = 0;        // Average time period between ticks
   double cycles = 0;               // Extrapolated cycles incl. pre and post partial periods
   double RPM = 0;                  // Revs per minute
+
 
   // Loop collecting interrupts if it's not yet time to start a new interval
   // Blink LED on each interrupt while waiting for the next output time
@@ -142,7 +145,7 @@ void loop() {
   interrupts();
 
   // ISR will continue with new interval accounting in the background
-  
+
   if (!ticks) {  // No ticks, so no pre or post period
     preTick  = 0;
     postTick = 0;
@@ -168,13 +171,25 @@ void loop() {
 
   // Reading DHT22 must be done with interrupts enabled as it uses millis() internally??
   // https://arduino.stackexchange.com/questions/61567/what-functions-are-disabled-with-nointerrupts
+  // Readings may be up to 2000ms old
   float humidity = dht.getHumidity();
   float temperature = dht.getTemperature();
   char *dhtStatus = dht.getStatusString();
 
   // Output
+  const char floatStrLen = 10;       // Length of a formatted float. 9 characters and '\0'
+  char floatStr[floatStrLen];     // For formatting floats for output
+
+  // Format float as string  https://arduino.stackexchange.com/a/53719/53509
+  dtostrf(RPM, 6, 1, floatStr); //  Format: 6 output chars, 1 decimal place, right align
+  // Remove trailing spaces.  https://arduino.stackexchange.com/a/53719/53509
+  //  char *space = strchr(floatStr, ' ');
+  //  if (space != NULL) *space = '\0';
+
   Serial.print("RPM: ");
-  Serial.print(RPM);
+//  dtostrf(RPM, 6, 1, floatString);
+//  Serial.print();
+  Serial.print(floatStr);
 
   Serial.print("  Temp: ");
   Serial.print(temperature, 1);
@@ -189,17 +204,17 @@ void loop() {
   Serial.print("  Ticks: ");
   Serial.print(ticks);
 
+  Serial.print("  Pre: ");
+  Serial.print(preTick);
+
+  Serial.print("  Post: ");
+  Serial.print(postTick);
+
   Serial.print("  Period: ");
   Serial.print(avgTickPeriod);
 
   Serial.print("  Cycles: ");
-  Serial.print(cycles);
-
-  Serial.print("  Pre: ");
-  Serial.print(preTick / 1000.0);
-
-  Serial.print("  Post: ");
-  Serial.println(postTick / 1000.0);
+  Serial.println(cycles);
 
   start = end;  // Loop begins in an already started interval
 }
