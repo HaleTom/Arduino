@@ -214,7 +214,8 @@ void loop() {
   Serial.print(avgTickPeriod);
 
   Serial.print("  Cycles: ");
-  Serial.println(cycles);
+  Serial.print(cycles);
+  Serial.print("\n");  // println emits both \r and \n at end
 
   start = end;  // Loop begins in an already started interval
 }
